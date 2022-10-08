@@ -149,6 +149,7 @@ hh = [];
 cc = [];
 yy = [];
 mvmv = [];
+faltruecc = [];
 
 for con = 1:8
 [~,~,mpcekf] = nlmpcmove(nlmpcobj_Plan,x0,u0,yref,[qin_f(1:horizon,:), cin_f(1:horizon,con)]);
@@ -178,14 +179,15 @@ for k = 1:(length(MD_t)-horizon-1)
     mpc_ekfmv = [mpc_ekfmv; mpcekf.MVopt(2,:)];
     mpc_x = [mpc_x; xxk];
 end
-
+close(waitbar_h); clear waitbar_h;
 hh = [hh, mpc_ekfh];
 cc = [cc, mpc_ekfc];
 yy = [yy, mpc_ekfy];
 mvmv = [mvmv, mpc_ekfmv];
+faltruecc = [faltruecc, mpc_x(:,2)];
+
 end
 
-close(waitbar_h); clear waitbar_h;
 fprintf('MPC-EKF Optimization finished...\n');
 timeElapsed = toc
 

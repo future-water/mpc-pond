@@ -4,8 +4,8 @@ chars = num2cell(alphabet(1:nIDs));
 chars = chars.';
 charlbl = strcat('(',chars,')'); % {'(a)','(b)','(c)','(d)'}
 
-ctable1 = [parula(8), 0.5*ones(8,1)];
-ctable2 = parula(8);
+ctable1 = [jet(8), 0.5*ones(8,1)];
+ctable2 = jet(8);
 
 fig = figure('Units', 'points', 'position',[100 100 1500 450]);
 c = [13 145 235]./255;
@@ -72,7 +72,7 @@ xlim([0, Nstep])
 xticks([0 24 48 72 96 120 144 168 192]*4)
 xticklabels({'0','24','48','72','96','120','144','168','192'})
 
-colormap(parula(8))
+colormap(jet(8))
 cb = colorbar('FontSize',12,'fontweight','bold','position',[0.6767+.255 0.0891 .02 0.82], 'Location','eastoutside', 'Ticks',linspace(0,1,17),...
          'TickLabels',{'','25%','','50%','','75%','','100%','','125%','','150%','','175%','','200%',''})
 title(cb, 'EMC scenarios');
