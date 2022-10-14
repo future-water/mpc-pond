@@ -197,7 +197,7 @@ for t = 1:T
         indicator = 0;
     end
 end
-spill_q = 134285/10.764*max(0, h_q-10)/15/60.* C_q; 
+spill_q = 134285/10.764*max(0,diff([0, max(0, h_q-10)]))/15/60.* C_q; 
 
 %% RBC-Concentration
 
@@ -229,8 +229,9 @@ for t = 1:T
         theta_c(t) = 1;
     end
 end
-spill_c = 134285/10.764*max(0, h_c-10)/15/60.* C_c;
-
+spill_c = 134285/10.764*max(0, diff([0, max(0, h_c-10)]))/15/60.* C_c;
+q_out_limit = co*Ao*sqrt(2*g*hlimit)*min(1,hlimit);
+q_out_c_cut = min(q_out_c, q_out_limit);
 %% Unit conversion from US to SI
 qin_t = qin_t*0.028316846592;
 
@@ -250,6 +251,7 @@ mpc_ekfy = mpc_ekfy*0.028316846592;
 
 q_out_q = q_out_q*0.028316846592;
 q_out_c = q_out_c*0.028316846592;
+q_out_c_cut = q_out_c_cut*0.028316846592;
 h_q = h_q/3.281;
 h_c = h_c/3.281;
 
@@ -259,11 +261,11 @@ overflow = max(0,[(max(mpc_ekfh) - 10/3.281)*134285/10.764, (max(h_c) - 10/3.281
 overflow_percent = overflow/max(overflow)*100;
 
 % peak outflow
-outflow = [max(mpc_ekfy), max(q_out_c), max(q_out_q), max(nc.Yopt(:,3))];
+outflow = [max(mpc_ekfy), max(q_out_c_cut), max(q_out_q), max(nc.Yopt(:,3))];
 outflow_percent = outflow/max(outflow)*100;
 
 % cumulative load
-load = [max(cumsum(mpc_x(:,2).*mpc_ekfy)*10^(-3)*15*60), max(cumsum(C_c.*[0,q_out_c]+spill_c)*10^(-3)*15*60), max(cumsum(C_q.*[0,q_out_q]+spill_q)*10^(-3)*15*60), max(cumsum(nc.Xopt(1:T,2).*nc.Yopt(1:T,3))*10^(-3)*15*60)];
+load = [max(cumsum(mpc_x(:,2).*mpc_ekfy)*10^(-3)*15*60), max(cumsum(C_c.*[0,q_out_c_cut]+spill_c)*10^(-3)*15*60), max(cumsum(C_q.*[0,q_out_q]+spill_q)*10^(-3)*15*60), max(cumsum(nc.Xopt(1:T,2).*nc.Yopt(1:T,3))*10^(-3)*15*60)];
 load_percent = load/max(load)*100;
 
 % control effort
@@ -271,5 +273,5 @@ coneff = [sum(diff(mpc_ekfmv).^2), sum(diff(theta_c).^2), sum(diff(theta_q).^2),
 coneff_percent = coneff/max(coneff)*100;
 
 % outflow smoothness
-smooth = [sum((mpc_ekfy - mean(mpc_ekfy)).^2), sum((q_out_c - mean(q_out_c)).^2), sum((q_out_q - mean(q_out_q)).^2), sum((nc.Yopt(1:T,3) - mean(nc.Yopt(1:T,3))).^2)];
+smooth = [sum((mpc_ekfy - mean(mpc_ekfy)).^2), sum((q_out_c_cut - mean(q_out_c_cut)).^2), sum((q_out_q - mean(q_out_q)).^2), sum((nc.Yopt(1:T,3) - mean(nc.Yopt(1:T,3))).^2)];
 smooth_percent = smooth/max(smooth)*100;
