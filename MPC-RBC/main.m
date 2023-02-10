@@ -3,14 +3,15 @@ close all
 clc
 %% Data preparation
 % Importing input data
-data1 = readtable('gamma_4_15min_base.csv'); % true
-data2 = readtable('gamma_4_15min_200b_50rate_150emc.csv'); % forecasts
+%data1 = readtable('gamma_4_15min_base.csv'); % true
+data1 = readtable('pond4_background.csv'); % true
+data2 = readtable('pond4_background.csv'); % forecasts
 
 % Extending the duration to see the behavior of system after the storm event
-qin_t = [data1.qin; zeros(500,1)]; 
-cin_t = [data1.cin; zeros(500,1)];
+qin_t = [data1.qin; zeros(789,1)]; 
+cin_t = [data1.cin; zeros(789,1)];
 
-qin_f = [data2.qin; zeros(500,1)];
+qin_f = [data2.qin; zeros(789,1)];
 cin_f = [sum(data1.qin.*data1.cin)/sum(data1.qin)*ones(1077,1)]; % Imperfect water quality prediction as EMC
 
 MD_t = [qin_t, cin_t]; % Measured disturbances with perfect knowledge
@@ -56,9 +57,6 @@ nlmpcobj_Plan.MV(1).Max = 1;
 % Specify the upper bound for the height of the pond
 hlimit = 10;
 nlmpcobj_Plan.State(1).Max = hlimit;
-
-nlmpcobj_Plan.State(1).ScaleFactor = hlimit;
-nlmpcobj_Plan.State(2).ScaleFactor = 25;
 
 % Cost function
 nlmpcobj_Plan.Optimization.CustomCostFcn = 'pondcstrCostFcn'; 
@@ -146,7 +144,7 @@ yy = [];
 mvmv = [];
 randrand = [];
 
-for t = 1:2 % the number of iterations for multiple sumulation with noise
+for t = 1:1 % the number of iterations for multiple sumulation with noise
 [~,~,mpcekf] = nlmpcmove(nlmpcobj_Plan,x0,u0,yref,MD(1:horizon,:));
 mpc_ekfh_n = mpcekf.Xopt(1:2,1);
 mpc_ekfc_n = mpcekf.Xopt(1:2,2);
@@ -158,11 +156,11 @@ randomness = [];
 measure_c = mpcekf.Xopt(1:2,2);
 
 EKF.ProcessNoise = diag([0;1]);
-EKF.MeasurementNoise = 0.25;
+EKF.MeasurementNoise = 0.1;
 
 for k = 1:(length(MD)-horizon-1)
     yk_n = pondcstr_StateFcn(mpc_x_n(k+1,:), [mpcekf.MVopt(2,:), MD_t(k+1,:)]);
-    random = [0, 0.025].*randn(1,2).*yk_n';
+    random = [0, 0.02].*randn(1,2).*yk_n';
     yk_n = max(0, yk_n'+random);
     xxk = correct(EKF, yk_n(2));
     xxk = [mpcekf.Xopt(2,1), xxk(2)];
@@ -190,7 +188,7 @@ end
 co = 0.65;
 Ao = 1;
 g = 32.2;
-k = 0.9/24/60/60;
+k = 0.8/24/60/60;
 dt = 15*60;
 
 h0 = 0.01; % S(0)
@@ -207,6 +205,7 @@ q_desired = max(truey);
 hdes = 1/(2*g)*(q_desired/(co*Ao))^2;
 hlimit = max(trueh);
 indicator = 1;
+h_reten = 0.05;
 
 % Operating policy
 for t = 1:T
@@ -235,18 +234,24 @@ for t = 1:T
         theta_q(t) = q_desired/(co*Ao*sqrt(2*g*h_q(t)));
         indicator = 0;
 
-    elseif (h_q(t) < hdes) && (indicator == 0)
+    elseif (h_q(t) < hdes) && (indicator == 0) && (h_q(t) > h_reten)
         q_out_q(t) = co*Ao*sqrt(2*g*h_q(t))*min(1,h_q(t));
         h_q(t+1) = max(0, h_q(t) + dt/A*(q_in(t) - q_out_q(t)));
         theta_q(t) = 1;
         indicator = 0;
+
+    elseif (h_q(t) <= h_reten) && (indicator == 0)
+        q_out_q(t) = 0;
+        h_q(t+1) = h_q(t) + dt/A*(q_in(t) - q_out_q(t));
+        theta_q(t) = 0;
+        indicator = 1;
     end
 end
-spill_q = 134285/10.764*max(0, h_q-10)/15/60.* C_q; 
+spill_q = 134285/10.764*max(0, h_q-10)/3.281/15/60.* C_q; 
 
 %% RBC-Concentration
 
-climit = sum(data1.cin.*data1.qin)./sum(data1.qin)*0.1;
+climit = 5;
 h_c(1) = h0;
 C_c(1) = C0;
 % Operating policy
@@ -274,7 +279,46 @@ for t = 1:T
         theta_c(t) = 1;
     end
 end
-spill_c = 134285/10.764*max(0, h_c-10)/15/60.* C_c;
+spill_c = 134285/10.764*max(0, h_c-10)/3.281/15/60.* C_c;
+
+%% RBC-Both
+
+h_b(1) = h0;
+C_b(1) = C0;
+% Operating policy
+for t = 1:T
+    % pond configuration
+    elevation = [0, 2, 4, 6, 8, 10];
+    area = [82971, 93258, 106100, 119152, 134285, 134285];
+    A = interp1(elevation, area, h_b(t),'spline');
+
+    C_b(t+1) = (C_b(t)*A*h_b(t)*exp(-k*dt)+c_in(t)*q_in(t)*dt)/(A*h_b(t)+q_in(t)*dt);
+
+    if (C_b(t) > climit) && (h_b(t) < hlimit)
+        q_out_b(t) = 0;
+        h_b(t+1) = h_b(t) + dt/A*(q_in(t) - q_out_b(t));
+        theta_b(t) = 0;
+
+    elseif (h_b(t) >= hlimit)
+        q_out_b(t) = q_desired;
+        h_b(t+1) = max(0, h_b(t) + dt/A*(q_in(t) - q_out_b(t)));
+        theta_b(t) = 1;
+
+    elseif (C_b(t) < climit)
+        if (h_b(t) < hlimit) && (h_b(t) >= hdes)
+            q_out_b(t) = q_desired;
+            h_b(t+1) = max(0, h_b(t) + dt/A*(q_in(t) - q_out_b(t)));
+            theta_b(t) = q_desired/(co*Ao*sqrt(2*g*h_b(t)));
+       
+        elseif (h_b(t) < hdes)
+            q_out_b(t) = co*Ao*sqrt(2*g*h_b(t))*min(1,h_b(t));
+            h_b(t+1) = max(0, h_b(t) + dt/A*(q_in(t) - q_out_b(t)));
+            theta_b(t) = 1;
+        end
+
+    end
+end
+spill_b = 134285/10.764*max(0, h_b-10)/3.281/15/60.* C_b;
 
 %% Unit conversion from US to SI
 qin_t = qin_t*0.028316846592;
@@ -298,27 +342,29 @@ yy = yy*0.028316846592;
 
 q_out_q = q_out_q*0.028316846592;
 q_out_c = q_out_c*0.028316846592;
+q_out_b = q_out_b*0.028316846592;
 h_q = h_q/3.281;
 h_c = h_c/3.281;
+h_b = h_b/3.281;
 
 %% Perforamance comparison
 
 % overflow
-overflow = max(0,[(max(trueh) - 10/3.281)*134285/10.764, (max(h_c) - 10/3.281)*134285/10.764, (max(h_q) - 10/3.281)*134285/10.764]);
+overflow = max(0,[(max(trueh) - 10/3.281)*134285/10.764, (max(h_c) - 10/3.281)*134285/10.764, (max(h_q) - 10/3.281)*134285/10.764, (max(h_b) - 10/3.281)*134285/10.764]);
 overflow_percent = overflow/max(overflow)*100;
 
 % peak outflow
-outflow = [max(truey), max(q_out_c), max(q_out_q), max(nc.Yopt(:,3))];
+outflow = [max(truey), max(q_out_c), max(q_out_q), max(q_out_b), max(nc.Yopt(:,3))];
 outflow_percent = outflow/max(outflow)*100;
 
 % cumulative load
-load = [max(cumsum(truec.*truey)*10^(-3)*15*60), max(cumsum(C_c.*[0,q_out_c]+spill_c)*10^(-3)*15*60), max(cumsum(C_q.*[0,q_out_q]+spill_q)*10^(-3)*15*60), max(cumsum(nc.Xopt(1:T,2).*nc.Yopt(1:T,3))*10^(-3)*15*60)];
+load = [max(cumsum(truec.*truey)*10^(-3)*15*60), max(cumsum(C_c.*[0,q_out_c]+spill_c)*10^(-3)*15*60), max(cumsum(C_q.*[0,q_out_q]+spill_q)*10^(-3)*15*60), max(cumsum(C_b.*[0,q_out_b]+spill_b)*10^(-3)*15*60), max(cumsum(nc.Xopt(1:T,2).*nc.Yopt(1:T,3))*10^(-3)*15*60)];
 load_percent = load/max(load)*100;
 
 % control effort
-coneff = [sum(diff(truemv).^2), sum(diff(theta_c).^2), sum(diff(theta_q).^2), sum(diff(nc.MVopt(1:T,1)).^2)];
+coneff = [sum(diff(truemv).^2), sum(diff(theta_c).^2), sum(diff(theta_q).^2), sum(diff(theta_b).^2), sum(diff(nc.MVopt(1:T,1)).^2)];
 coneff_percent = coneff/max(coneff)*100;
 
 % outflow smoothness
-smooth = [sum((truey - mean(truey)).^2), sum((q_out_c - mean(q_out_c)).^2), sum((q_out_q - mean(q_out_q)).^2), sum((nc.Yopt(1:T,3) - mean(nc.Yopt(1:T,3))).^2)];
+smooth = [sum((truey - mean(truey)).^2), sum((q_out_c - mean(q_out_c)).^2), sum((q_out_q - mean(q_out_q)).^2), sum((q_out_b - mean(q_out_b)).^2), sum((nc.Yopt(1:T,3) - mean(nc.Yopt(1:T,3))).^2)];
 smooth_percent = smooth/max(smooth)*100;
