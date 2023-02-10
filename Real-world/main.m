@@ -3,18 +3,50 @@ close all
 clc
 %% Data preparation
 % Importing input data
-data1 = readtable('gamma_4_real20210906.csv'); % true
-data2 = readtable('gamma_4_real20210906.csv'); % forecasts
+data1 = readtable('pond4_2021.xlsx'); % true
+data2 = readtable('pond4_2021.xlsx'); % forecasts
 
 % Extending the duration to see the behavior of system after the storm event
-qin_t = [data1.qin; zeros(500,1)]; 
-cin_t = [data1.cin; zeros(500,1)];
+qin_t = [data1.qin]; 
+cin_t = [data1.cin];
 
-qin_f = [data2.qin; zeros(500,1)];
-cin_f = [12*ones(981,1)]; % Imperfect water quality prediction as EMC
+qin_f = [data2.qin];
+cin_f = [12*ones(length(qin_f),1)]; % Imperfect water quality prediction as EMC
 
 MD_t = [qin_t, cin_t]; % Measured disturbances with perfect knowledge
 MD = [qin_f, cin_f]; % Measured disturbances with imperfect knowledge
+
+%% Paasive
+% Parameters
+co = 0.65;
+Ao = 1;
+g = 32.2;
+k = 0.8/24/60/60;
+dt = 15*60;
+
+h0 = 0.01; % S(0)
+C0 = 0;
+h_p(1) = h0;
+C_p(1) = C0;
+q_out_p(1) = 0;
+
+q_in = qin_t;
+c_in = cin_t;
+
+T = length(MD);
+
+% Operating policy
+for t = 1:T
+    % pond configuration
+    elevation = [0, 2, 4, 6, 8, 10];
+    area = [82971, 93258, 106100, 119152, 134285, 134285];
+    A = interp1(elevation, area, h_p(t),'spline');
+
+    C_p(t+1) = (C_p(t)*A*h_p(t)*exp(-k*dt)+c_in(t)*q_in(t)*dt)/(A*h_p(t)+q_in(t)*dt);
+    q_out_p(t+1)  = co*Ao*sqrt(2*g*h_p(t))*min(1,h_p(t));
+    h_p(t+1) = h_p(t) + dt/A*(q_in(t) - q_out_p(t));
+    
+end
 
 %% Nonlinear MPC Design 
 % Create a nonlinear MPC object with 2 states, 3 outputs, 1 manipulated variables, and 2 measured disturbance.
@@ -23,7 +55,6 @@ nlmpcobj_Plan = nlmpc(2, 3, 'MV', 1, 'MD', [2,3]);
 % Controller sample time |Ts| and prediction horizon.
 Ts = 1;
 nlmpcobj_Plan.Ts = Ts;
-nlmpcobj_Plan.PredictionHorizon = length(MD);
 nlmpcobj_Plan.ControlHorizon = 2;
 
 % Specify the nonlinear model in the controller
@@ -35,14 +66,6 @@ nlmpcobj_Plan.Model.OutputFcn = @(x,u) pondcstr_OutputFcn(x,u);
 x0(1) = 0.01;
 x0(2) = 0;
 u0 = 1;
-
-%% Passive system simulation; valve is always opened
-nlmpcobj_Plan.MV(1).Min = 1;
-nlmpcobj_Plan.MV(1).Max = 1;
-
-fprintf('\nPassive system\n');
-[~,~,nc] = nlmpcmove(nlmpcobj_Plan,x0,u0,[],MD_t);
-fprintf('Passive system End\n');
 
 %% MPC simulation
 horizon = 96; % 24hr
@@ -57,9 +80,6 @@ nlmpcobj_Plan.MV(1).Max = 1;
 hlimit = 10;
 nlmpcobj_Plan.State(1).Max = hlimit;
 
-nlmpcobj_Plan.State(1).ScaleFactor = hlimit;
-nlmpcobj_Plan.State(2).ScaleFactor = 25;
-
 % Cost function
 nlmpcobj_Plan.Optimization.CustomCostFcn = 'pondcstrCostFcn'; 
 nlmpcobj_Plan.Optimization.ReplaceStandardCost = true;
@@ -71,42 +91,6 @@ DMeasFcn = @(xk) xk(2);
 EKF = extendedKalmanFilter(DStateFcn,DMeasFcn,x0);
 EKF.ProcessNoise = diag([0;1]);
 EKF.MeasurementNoise = 0.1;
-
-%% MPC-true and MPC-false
-% Find the optimal trajectory for valve opening
-fprintf('\nMPC Optimization started...\n');
-tic
-% initial values
-falh(1) = x0(1);
-falc(1) = x0(2);
-faly(1) = 0;
-falmv(1) = u0;
-
-trueh(1) = x0(1);
-truec(1) = x0(2);
-truey(1) = 0;
-truemv(1) = u0;
-
-waitbar_h = waitbar(0,'Process . . . ');
-for k = 1:(length(MD)-horizon)
-    % MPC-flase
-    waitbar(k/(length(MD)-horizon),waitbar_h)
-    [~,~,false] = nlmpcmove(nlmpcobj_Plan,[falh(k), falc(k)],falmv(k),yref,MD(k:(horizon+k-1),:));
-    falh(k+1,1) = false.Xopt(2,1);
-    falc(k+1,1) = false.Xopt(2,2);
-    faly(k+1,1) = false.Yopt(2,3);
-    falmv(k+1,1) = false.MVopt(2,:);
-
-    % MPC-true
-    [~,~,true] = nlmpcmove(nlmpcobj_Plan,[trueh(k), truec(k)],truemv(k),yref,MD_t(k:(horizon+k-1),:));
-    trueh(k+1,1) = true.Xopt(2,1);
-    truec(k+1,1) = true.Xopt(2,2);
-    truey(k+1,1) = true.Yopt(2,3);
-    truemv(k+1,1) = true.MVopt(2,:);
-end
-close(waitbar_h); clear waitbar_h;
-fprintf('MPC Optimization finished...\n');
-timeElapsed = toc
 
 %% MPC-EKF
 % Find the optimal trajectory for valve opening with MPC-EKF
@@ -146,7 +130,7 @@ timeElapsed = toc
 co = 0.65;
 Ao = 1;
 g = 32.2;
-k = 0.9/24/60/60;
+k = 0.8/24/60/60;
 dt = 15*60;
 
 h0 = 0.01; % S(0)
@@ -156,12 +140,13 @@ C_q(1) = C0;
 q_in = qin_t;
 c_in = cin_t;
 
-T = length(trueh);
+T = length(mpc_ekfh);
 q_desired = max(mpc_ekfy);
 
 hdes = 1/(2*g)*(q_desired/(co*Ao))^2;
-hlimit = max(trueh);
+hlimit = 10;
 indicator = 1;
+h_reten = 0.05;
 
 % Operating policy
 for t = 1:T
@@ -190,18 +175,24 @@ for t = 1:T
         theta_q(t) = q_desired/(co*Ao*sqrt(2*g*h_q(t)));
         indicator = 0;
 
-    elseif (h_q(t) < hdes) && (indicator == 0)
+    elseif (h_q(t) < hdes) && (indicator == 0) && (h_q(t) > h_reten)
         q_out_q(t) = co*Ao*sqrt(2*g*h_q(t))*min(1,h_q(t));
         h_q(t+1) = max(0, h_q(t) + dt/A*(q_in(t) - q_out_q(t)));
         theta_q(t) = 1;
         indicator = 0;
+        
+    elseif (h_q(t) <= h_reten) && (indicator == 0)
+        q_out_q(t) = 0;
+        h_q(t+1) = h_q(t) + dt/A*(q_in(t) - q_out_q(t));
+        theta_q(t) = 0;
+        indicator = 1;
+
     end
 end
-spill_q = 134285/10.764*max(0,diff([0, max(0, h_q-10)]))/15/60.* C_q; 
+spill_q = 134285/10.764*max(0,diff([0, max(0, h_q- hlimit)])/3.281)/15/60.* C_q; 
 
 %% RBC-Concentration
-
-climit = sum(data1.cin.*data1.qin)./sum(data1.qin)*0.1;
+climit = sum(data1.cin.*data1.qin)./sum(data1.qin)*0.05;
 h_c(1) = h0;
 C_c(1) = C0;
 % Operating policy
@@ -229,22 +220,54 @@ for t = 1:T
         theta_c(t) = 1;
     end
 end
-spill_c = 134285/10.764*max(0, diff([0, max(0, h_c-10)]))/15/60.* C_c;
+spill_c = 134285/10.764*max(0, diff([0, max(0, h_c-hlimit)])/3.281)/15/60.* C_c;
 q_out_limit = co*Ao*sqrt(2*g*hlimit)*min(1,hlimit);
 q_out_c_cut = min(q_out_c, q_out_limit);
+%% RBC-Both
+h_b(1) = h0;
+C_b(1) = C0;
+% Operating policy
+for t = 1:T
+    % pond configuration
+    elevation = [0, 2, 4, 6, 8, 10];
+    area = [82971, 93258, 106100, 119152, 134285, 134285];
+    A = interp1(elevation, area, h_b(t),'spline');
+
+    C_b(t+1) = (C_b(t)*A*h_b(t)*exp(-k*dt)+c_in(t)*q_in(t)*dt)/(A*h_b(t)+q_in(t)*dt);
+
+    if (C_b(t) > climit) && (h_b(t) < hlimit)
+        q_out_b(t) = 0;
+        h_b(t+1) = h_b(t) + dt/A*(q_in(t) - q_out_b(t));
+        theta_b(t) = 0;
+
+    elseif (h_b(t) >= hlimit)
+        q_out_b(t) = q_desired;
+        h_b(t+1) = max(0, h_b(t) + dt/A*(q_in(t) - q_out_b(t)));
+        theta_b(t) = 1;
+
+    elseif (C_b(t) < climit)
+        if (h_b(t) < hlimit) && (h_b(t) >= hdes)
+            q_out_b(t) = q_desired;
+            h_b(t+1) = max(0, h_b(t) + dt/A*(q_in(t) - q_out_b(t)));
+            theta_b(t) = q_desired/(co*Ao*sqrt(2*g*h_b(t)));
+       
+        elseif (h_b(t) < hdes)
+            q_out_b(t) = co*Ao*sqrt(2*g*h_b(t))*min(1,h_b(t));
+            h_b(t+1) = max(0, h_b(t) + dt/A*(q_in(t) - q_out_b(t)));
+            theta_b(t) = 1;
+        end
+
+    end
+end
+spill_b = 134285/10.764*max(0,diff([0, max(0, h_b-hlimit)])/3.281)/15/60.* C_b; 
+
 %% Unit conversion from US to SI
 qin_t = qin_t*0.028316846592;
 
-nc.Xopt(:,1) = nc.Xopt(:,1)/3.281;
-nc.Yopt(:,3) = nc.Yopt(:,3)*0.028316846592;
+q_out_p = q_out_p*0.028316846592;
+h_p = h_p/3.281;
 
 hlimit = hlimit/3.281;
-
-falh = falh/3.281;
-faly = faly*0.028316846592;
-
-trueh = trueh/3.281;
-truey = truey*0.028316846592;
 
 mpc_ekfh = mpc_ekfh/3.281;
 mpc_ekfy = mpc_ekfy*0.028316846592;
@@ -252,26 +275,30 @@ mpc_ekfy = mpc_ekfy*0.028316846592;
 q_out_q = q_out_q*0.028316846592;
 q_out_c = q_out_c*0.028316846592;
 q_out_c_cut = q_out_c_cut*0.028316846592;
+q_out_b = q_out_b*0.028316846592;
+
 h_q = h_q/3.281;
 h_c = h_c/3.281;
+h_b = h_b/3.281;
 
 %% Perforamance comparison
+
 % overflow
-overflow = max(0,[(max(mpc_ekfh) - 10/3.281)*134285/10.764, (max(h_c) - 10/3.281)*134285/10.764, (max(h_q) - 10/3.281)*134285/10.764]);
+overflow = max(0,[(max(mpc_ekfh) - 10/3.281)*134285/10.764, (max(h_c) - 10/3.281)*134285/10.764, (max(h_q) - 10/3.281)*134285/10.764, (max(h_b) - 10/3.281)*134285/10.764]);
 overflow_percent = overflow/max(overflow)*100;
 
 % peak outflow
-outflow = [max(mpc_ekfy), max(q_out_c_cut), max(q_out_q), max(nc.Yopt(:,3))];
+outflow = [max(mpc_ekfy), max(q_out_c), max(q_out_q), max(q_out_b), max(q_out_p)];
 outflow_percent = outflow/max(outflow)*100;
 
 % cumulative load
-load = [max(cumsum(mpc_x(:,2).*mpc_ekfy)*10^(-3)*15*60), max(cumsum(C_c.*[0,q_out_c_cut]+spill_c)*10^(-3)*15*60), max(cumsum(C_q.*[0,q_out_q]+spill_q)*10^(-3)*15*60), max(cumsum(nc.Xopt(1:T,2).*nc.Yopt(1:T,3))*10^(-3)*15*60)];
+load = [max(cumsum(mpc_ekfc.*mpc_ekfy)*10^(-3)*15*60), max(cumsum(C_c.*[0,q_out_c_cut]+spill_c)*10^(-3)*15*60), max(cumsum(C_q.*[0,q_out_q]+spill_q)*10^(-3)*15*60), max(cumsum(C_b.*[0,q_out_b]+spill_b)*10^(-3)*15*60), max(cumsum(q_out_p.*C_p)*10^(-3)*15*60)];
 load_percent = load/max(load)*100;
 
 % control effort
-coneff = [sum(diff(mpc_ekfmv).^2), sum(diff(theta_c).^2), sum(diff(theta_q).^2), sum(diff(nc.MVopt(1:T,1)).^2)];
+coneff = [sum(diff(mpc_ekfmv).^2), sum(diff(theta_c).^2), sum(diff(theta_q).^2), sum(diff(theta_b).^2)];
 coneff_percent = coneff/max(coneff)*100;
 
 % outflow smoothness
-smooth = [sum((mpc_ekfy - mean(mpc_ekfy)).^2), sum((q_out_c_cut - mean(q_out_c_cut)).^2), sum((q_out_q - mean(q_out_q)).^2), sum((nc.Yopt(1:T,3) - mean(nc.Yopt(1:T,3))).^2)];
+smooth = [sum((mpc_ekfy - mean(mpc_ekfy)).^2), sum((q_out_c_cut - mean(q_out_c_cut)).^2), sum((q_out_q - mean(q_out_q)).^2), sum((q_out_b - mean(q_out_b)).^2), sum((q_out_p - mean(q_out_p)).^2)];
 smooth_percent = smooth/max(smooth)*100;
