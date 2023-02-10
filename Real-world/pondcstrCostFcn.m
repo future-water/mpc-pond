@@ -11,4 +11,4 @@ g = 32.2;
 
 q_out = U1.*co.*Ao.*sqrt(2*g.*X1).*min(1,X1);
 
-f = 2*sum((X2.*q_out).^2) + 4*sum((q_out-1/p*sum(q_out)).^2)+ 900*(X1(end).^2);
+f = 5*sum((X2.*q_out).^2) + 1*sum((q_out-1/p*sum(q_out)).^2)+ 900*(X1(end).^2);
